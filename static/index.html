@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Radixsol Email Automation</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">R</span>
+      <div>
+        <div class="brand-title">Radixsol Email Automation</div>
+        <div class="brand-sub">Role-targeted outreach</div>
+      </div>
+    </div>
+    <div class="chips" id="status-chips"></div>
+  </header>
+
+  <main>
+    <!-- 1. Contacts -->
+    <section class="card">
+      <h2><span class="step">1</span> Contacts</h2>
+      <div id="dropzone" class="dropzone">
+        <input type="file" id="file-input" accept=".xlsx,.xls" hidden>
+        <div class="dz-icon">⬆</div>
+        <p>Drag a <strong>.xlsx</strong> here, or <button id="browse-btn" class="link">browse</button></p>
+        <p class="muted">Columns auto-detected: First Name, Email, Title, Company, Category Override</p>
+      </div>
+      <div id="contacts-summary" class="summary hidden"></div>
+      <div class="table-wrap"><table id="contacts-table" class="hidden"></table></div>
+    </section>
+
+    <!-- 2. Options -->
+    <section class="card">
+      <h2><span class="step">2</span> Options</h2>
+      <div class="options-grid">
+        <label class="field">Test email <span class="muted">(send all here)</span>
+          <input type="email" id="test-email" placeholder="you@radixsol.com">
+        </label>
+        <label class="field">Limit
+          <input type="number" id="limit" min="1" placeholder="all rows">
+        </label>
+        <label class="field">Delay between sends (s)
+          <input type="number" id="delay" min="0" step="0.5" value="2">
+        </label>
+        <label class="field">Body format
+          <select id="body-type"><option value="Text">Plain text</option><option value="HTML">HTML</option></select>
+        </label>
+        <label class="check"><input type="checkbox" id="use-claude" checked> Use Claude to classify &amp; personalize</label>
+        <label class="check"><input type="checkbox" id="dry-run"> Dry run (build but don't send)</label>
+      </div>
+      <div class="actions">
+        <button id="preview-btn" class="btn">Preview emails</button>
+        <button id="send-btn" class="btn primary">Send</button>
+      </div>
+    </section>
+
+    <!-- 3. Preview -->
+    <section class="card hidden" id="preview-card">
+      <h2><span class="step">3</span> Preview <span class="muted" id="preview-count"></span></h2>
+      <div id="preview-list" class="preview-list"></div>
+    </section>
+
+    <!-- 4. Sending -->
+    <section class="card hidden" id="progress-card">
+      <h2><span class="step">4</span> Sending</h2>
+      <div class="progressbar"><div id="progress-fill"></div></div>
+      <div id="progress-summary" class="muted">Starting…</div>
+      <div id="progress-list" class="progress-list"></div>
+    </section>
+
+    <!-- 5. Reports & Follow-ups -->
+    <section class="card" id="followup-card">
+      <h2><span class="step">5</span> Reports &amp; Follow-ups</h2>
+      <p class="muted" id="followup-intervals"></p>
+      <div id="followup-stats" class="fu-stats"></div>
+      <p class="muted" id="followup-breakdown"></p>
+      <div class="actions">
+        <button id="fu-refresh" class="btn">Refresh</button>
+        <button id="fu-dry" class="btn">Preview due</button>
+        <button id="fu-run" class="btn primary">Run follow-ups now</button>
+      </div>
+      <p class="fu-note muted">Set up the daily scheduled task (see README) and follow-ups send <strong>automatically</strong>. This button is only for on-demand runs and testing.</p>
+      <div id="fu-progress" class="progress-list"></div>
+    </section>
+  </main>
+
+  <!-- Email viewer -->
+  <div class="modal hidden" id="email-modal">
+    <div class="modal-box">
+      <div class="modal-head">
+        <div>
+          <div class="modal-to" id="modal-to"></div>
+          <div class="modal-subject" id="modal-subject"></div>
+        </div>
+        <button class="close" data-close="email-modal">✕</button>
+      </div>
+      <pre class="modal-body" id="modal-body"></pre>
+    </div>
+  </div>
+
+  <!-- Sign-in -->
+  <div class="modal hidden" id="signin-modal">
+    <div class="modal-box small">
+      <div class="modal-head">
+        <div class="modal-subject">Sign in to Microsoft</div>
+        <button class="close" data-close="signin-modal">✕</button>
+      </div>
+      <div class="signin-body" id="signin-body"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+  <script src="app.js"></script>
+</body>
+</html>

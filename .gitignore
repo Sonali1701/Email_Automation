@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+.msal_cache.bin
+previews/
+send_log.csv
+contacts.xlsx
+uploads/
+outreach.db
+*.log
+*.stackdump
+.idea/
