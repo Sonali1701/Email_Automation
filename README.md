@@ -187,50 +187,86 @@ Note: the task only fires when this PC is on at that time. For true 24/7
 automation, host `followups.py` on an always-on machine (e.g. a daily cron on
 your Render setup) using the same `.env` and `outreach.db`.
 
-## Hosting it in the cloud (Render) — fully automatic
+## Hosting it for free (Render Web Service) — fully automatic
 
-Running on Render makes follow-ups truly automatic (24/7, no PC needed). The app
-is dual-backend: with `DATABASE_URL` set it uses **Postgres** + DB-stored token;
-locally it stays on SQLite + a file. The included [render.yaml](render.yaml)
-provisions three things: the **web service**, a **Postgres** database, and a
-**daily cron** that runs the follow-up engine.
+Render's Cron Jobs and Blueprint plans aren't free, so the automatic daily run
+is done by a **free external scheduler** that pings a trigger URL on the app.
+The app is dual-backend: with `DATABASE_URL` set it uses **Postgres** + a
+DB-stored token; locally it stays on SQLite + a file.
 
-### Deploy
+You need three free pieces: a **Postgres database**, a **Render Web Service**,
+and a **scheduler** that hits the trigger once a day.
 
-1. Push this repo to GitHub (your `.env`, `outreach.db`, `.msal_cache.bin`,
+### 1. A free Postgres database
+
+Either reuse an existing one or make a new free one — our tables are namespaced
+(`outreach_contacts`, `outreach_kv`) so they won't collide with anything:
+
+- **Reuse your CRM's Render Postgres** (no extra cost) — just use its
+  connection string. Our namespaced tables sit alongside the CRM's.
+- **Or a free [Neon](https://neon.tech) / [Supabase](https://supabase.com)
+  Postgres** — create a project and copy its connection string.
+
+Keep that connection string for `DATABASE_URL` below.
+
+### 2. The Render Web Service (manual, no Blueprint)
+
+1. Push this repo to GitHub (`.env`, `outreach.db`, `.msal_cache.bin`,
    `contacts.xlsx` are gitignored and stay local).
-2. In Render → **New → Blueprint** → pick this repo. It reads `render.yaml` and
-   creates the web service, the database, and the cron job.
-3. Set the secret env vars (marked `sync: false`) in the Render dashboard for
-   **both** the web service and the cron job:
-   - `GRAPH_CLIENT_ID`, `GRAPH_TENANT_ID` — your Azure app (single-tenant is fine
-     for a radixsol.com user).
+2. Render → **New → Web Service** → connect the repo.
+3. Settings:
+   - **Runtime:** Python 3
+   - **Build command:** `pip install -r requirements.txt`
+   - **Start command:** `gunicorn app:app --worker-class gthread --threads 4 --timeout 600 --bind 0.0.0.0:$PORT`
+   - **Instance type:** **Free** (it sleeps when idle; the daily ping wakes it).
+4. **Environment** → add:
+   - `DATABASE_URL` = your Postgres connection string (step 1)
+   - `GRAPH_CLIENT_ID`, `GRAPH_TENANT_ID` = your Azure app (single-tenant is fine
+     for a radixsol.com user)
    - `ANTHROPIC_API_KEY`
-   - `APP_PASSWORD` — protects the web UI (you'll enter it in the browser).
-4. Open the web service URL, enter `APP_PASSWORD`, and **sign in to Microsoft
-   once** (device code). The token is saved in Postgres, so the daily cron reuses
-   it silently — no re-login.
-5. Make sure **`Mail.Read`** is granted on the Azure app (see the follow-up
+   - `ANTHROPIC_MODEL` = `claude-haiku-4-5-20251001`
+   - `FOLLOWUP_INTERVALS` = `2,5,7,10,20`
+   - `BODY_TYPE` = `Text`
+   - `APP_PASSWORD` = a password to open the web UI
+   - `CRON_TOKEN` = a long random secret for the trigger URL
+5. **Create Web Service.** When it's live, open the URL, enter `APP_PASSWORD`,
+   and **sign in to Microsoft once** (device code). The token is saved in
+   Postgres, so the daily run reuses it silently.
+6. Make sure **`Mail.Read`** is granted on the Azure app (see the follow-up
    section) or reply detection won't run.
+
+### 3. The free daily scheduler
+
+Have any free scheduler call this URL once a day — it returns immediately and
+runs the follow-up engine in the background:
+
+```
+https://<your-app>.onrender.com/api/cron/followups?token=<CRON_TOKEN>
+```
+
+- **[cron-job.org](https://cron-job.org)** (easiest): create a free cronjob with
+  that URL, daily. Done.
+- **Or GitHub Actions:** a scheduled workflow that `curl`s the URL daily.
+
+The ping also wakes the free (sleeping) web service, so the run always happens.
 
 ### How it runs once deployed
 
-- You upload contacts and send from the web UI (as before).
-- The **cron** runs `followups.py` every day at 09:00 UTC (14:30 IST — change the
-  `schedule` in `render.yaml`), detects replies, and sends due follow-ups. No
-  button, no PC.
+- You upload contacts and send from the web UI.
+- The daily ping detects replies and sends due follow-ups — **no button, no PC**.
 - The **Reports** card shows live totals (emails sent, replied, due, etc.).
 
 ### Notes / limits
 
 - This hosts **one sender** (whoever signs into that instance — all mail goes
-  from their mailbox). Multiple people each sending from their own mailbox would
+  from their mailbox). Several people each sending from their own mailbox would
   be a separate multi-user build.
 - Uploaded `.xlsx` files live on the web service's ephemeral disk, so re-upload
-  after a redeploy before sending a new batch. The sequence data is safe in
-  Postgres. Follow-ups need no file — they read from the database.
-- Very large initial sends stream over one long HTTP request; if a batch exceeds
-  the 600s server timeout, send it in chunks with the **Limit** field.
+  after a redeploy before a new batch. Sequence data is safe in Postgres;
+  follow-ups read from the database, not the file.
+- A free instance sleeps; the first request after idle takes ~30s to wake. The
+  daily ping handles this for follow-ups. For a paid always-on instance, pick a
+  higher plan.
 
 ## How classification maps to templates
 

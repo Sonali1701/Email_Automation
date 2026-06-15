@@ -45,12 +45,20 @@ APP_PASSWORD = os.getenv("APP_PASSWORD")
 
 @app.before_request
 def _require_auth():
+    # The cron trigger guards itself with its own token (called by an external
+    # scheduler that can't do the browser login), so skip basic auth for it.
+    if request.path.startswith("/api/cron/"):
+        return
     if not APP_PASSWORD:
         return
     auth = request.authorization
     if not auth or not hmac.compare_digest(auth.password or "", APP_PASSWORD):
         return Response("Authentication required.", 401,
                         {"WWW-Authenticate": 'Basic realm="Radixsol Email"'})
+
+
+# Guard so overlapping cron pings don't start two runs at once.
+_cron_running = threading.Event()
 
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
@@ -323,6 +331,42 @@ def followups_run():
             con.close()
 
     return Response(stream_with_context(generate()), mimetype="application/x-ndjson")
+
+
+def _run_cron_job():
+    """Run the follow-up engine in the background (triggered by the cron URL)."""
+    try:
+        con = db.connect()
+        try:
+            for _ in followups.process(con, get_mailer(), make_anthropic_client(),
+                                       load_signature(), db.get_intervals(),
+                                       dry_run=False, delay=float(os.getenv("FOLLOWUP_DELAY", "2"))):
+                pass
+        finally:
+            con.close()
+    finally:
+        _cron_running.clear()
+
+
+@app.route("/api/cron/followups", methods=["GET", "POST"])
+def cron_followups():
+    """Daily trigger for an external free scheduler (cron-job.org, GitHub Actions).
+    Call with ?token=<CRON_TOKEN>. Returns immediately; the run happens in the
+    background so the caller's request timeout can't cut it off."""
+    token = os.getenv("CRON_TOKEN")
+    given = request.args.get("token") or request.headers.get("X-Cron-Token")
+    if not token or not given or not hmac.compare_digest(given, token):
+        return jsonify({"error": "invalid or missing token"}), 403
+    if _cron_running.is_set():
+        return jsonify({"status": "already running"}), 202
+    try:
+        if not get_mailer().get_account_silent():
+            return jsonify({"error": "not signed in to Microsoft"}), 401
+    except Exception as exc:
+        return jsonify({"error": str(exc)}), 400
+    _cron_running.set()
+    threading.Thread(target=_run_cron_job, daemon=True).start()
+    return jsonify({"status": "started"}), 202
 
 
 if __name__ == "__main__":

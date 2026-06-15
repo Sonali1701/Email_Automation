@@ -1,24 +1,22 @@
-# Render Blueprint: web service + Postgres + a daily follow-up cron.
-# Deploy: push this repo to GitHub, then in Render -> New -> Blueprint, point at it.
-# Fill the `sync: false` secrets in the Render dashboard after the first deploy.
-
-databases:
-  - name: radixsol-outreach-db
-    plan: free
+# Optional Render Blueprint (free web service only).
+# Render Cron Jobs are NOT free, so follow-ups are instead triggered by a free
+# external scheduler (cron-job.org / GitHub Actions) hitting:
+#   https://<your-app>.onrender.com/api/cron/followups?token=<CRON_TOKEN>
+#
+# You can deploy with this Blueprint, or just create a Web Service manually
+# (see the README "Hosting it for free" section). Set DATABASE_URL to your own
+# Postgres (reuse your CRM's DB or a free Neon DB) and fill the secrets below.
 
 services:
-  # The web UI (upload, preview, send, reports, Microsoft sign-in).
   - type: web
     name: radixsol-email
     runtime: python
-    plan: starter            # a non-sleeping instance; free tier sleeps
+    plan: free                # free tier sleeps when idle; the daily ping wakes it
     buildCommand: "pip install -r requirements.txt"
-    startCommand: "gunicorn app:app --worker-class gthread --threads 4 --timeout 600 --bind 0.0.0.0:$PORT"
+    startCommand: "gunicorn app:app --workers 1 --worker-class gthread --threads 8 --timeout 600 --bind 0.0.0.0:$PORT"
     envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: radixsol-outreach-db
-          property: connectionString
+      - key: DATABASE_URL          # your Postgres (CRM DB with our namespaced tables, or Neon)
+        sync: false
       - key: GRAPH_CLIENT_ID
         sync: false
       - key: GRAPH_TENANT_ID
@@ -31,30 +29,7 @@ services:
         value: "2,5,7,10,20"
       - key: BODY_TYPE
         value: "Text"
-      - key: APP_PASSWORD          # protects the public URL (HTTP basic auth)
+      - key: APP_PASSWORD          # protects the web UI (HTTP basic auth)
         sync: false
-
-  # Runs the follow-up engine once a day (UTC). Detects replies, sends due bumps.
-  - type: cron
-    name: radixsol-followups
-    runtime: python
-    schedule: "0 9 * * *"         # 09:00 UTC daily (= 14:30 IST)
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "python followups.py"
-    envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: radixsol-outreach-db
-          property: connectionString
-      - key: GRAPH_CLIENT_ID
+      - key: CRON_TOKEN            # secret for the daily trigger URL
         sync: false
-      - key: GRAPH_TENANT_ID
-        sync: false
-      - key: ANTHROPIC_API_KEY
-        sync: false
-      - key: ANTHROPIC_MODEL
-        value: "claude-haiku-4-5-20251001"
-      - key: FOLLOWUP_INTERVALS
-        value: "2,5,7,10,20"
-      - key: BODY_TYPE
-        value: "Text"

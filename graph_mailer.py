@@ -82,7 +82,30 @@ class GraphMailer:
             with open(self._cache_path, "w", encoding="utf-8") as fh:
                 fh.write(data)
 
+    def _refresh_cache(self):
+        """Re-read the token from the backing store (DB or file) so a worker that
+        was started before sign-in, or a fresh process after a restart, picks up
+        the latest token instead of a stale empty cache."""
+        blob = None
+        if self._cache_load:
+            try:
+                blob = self._cache_load()
+            except Exception:
+                blob = None
+        elif os.path.exists(self._cache_path):
+            try:
+                with open(self._cache_path, "r", encoding="utf-8") as fh:
+                    blob = fh.read()
+            except Exception:
+                blob = None
+        if blob:
+            try:
+                self._cache.deserialize(blob)
+            except Exception:
+                pass
+
     def _token(self):
+        self._refresh_cache()
         result = None
         accounts = self.app.get_accounts()
         if accounts:
@@ -103,6 +126,7 @@ class GraphMailer:
     # --- Web-friendly auth helpers (non-blocking device flow) ---------------
     def get_account_silent(self):
         """Return the signed-in username from cache without prompting, else None."""
+        self._refresh_cache()
         accounts = self.app.get_accounts()
         if not accounts:
             return None

@@ -4,10 +4,13 @@ Dual-backend: uses PostgreSQL when DATABASE_URL is set (cloud / Render),
 otherwise a local SQLite file (desktop / dev). The SQL is written once with
 %s placeholders and translated to ? for SQLite.
 
+Tables are namespaced (outreach_*) so this can safely share an existing
+Postgres database (e.g. your CRM's) without colliding with its tables.
+
 One row per contact records where they are in the sequence so the follow-up
 engine knows who to chase, when, and who has already replied/bounced. A small
 kv table also holds the persisted Microsoft token cache so the hosted web app
-and the cron job share one sign-in.
+and the daily trigger share one sign-in.
 
 All timestamps are stored as UTC ISO-8601 strings with a trailing 'Z'
 (e.g. 2026-06-11T13:40:00Z) so they sort lexicographically and compare directly
@@ -22,14 +25,17 @@ DB_PATH = Path("outreach.db")
 DATABASE_URL = os.getenv("DATABASE_URL")
 IS_PG = bool(DATABASE_URL)
 
+TBL = "outreach_contacts"
+KV = "outreach_kv"
+
 if IS_PG:
     import psycopg2
     import psycopg2.extras
 else:
     import sqlite3
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS contacts (
+SCHEMA = f"""
+CREATE TABLE IF NOT EXISTS {TBL} (
   email          TEXT PRIMARY KEY,
   first_name     TEXT,
   last_name      TEXT,
@@ -48,8 +54,8 @@ CREATE TABLE IF NOT EXISTS contacts (
   created_at     TEXT,
   updated_at     TEXT
 );
-CREATE INDEX IF NOT EXISTS idx_status_due ON contacts(status, next_due_at);
-CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT);
+CREATE INDEX IF NOT EXISTS idx_outreach_status_due ON {TBL}(status, next_due_at);
+CREATE TABLE IF NOT EXISTS {KV} (k TEXT PRIMARY KEY, v TEXT);
 """
 
 
@@ -138,8 +144,8 @@ def record_initial_send(con, *, email, first_name, last_name, title, company, ca
     """Insert/restart a contact's sequence after the initial email goes out."""
     now = now_utc()
     nxt = compute_next_due(1, now, intervals)
-    _exec(con, """
-        INSERT INTO contacts (email, first_name, last_name, title, company, category,
+    _exec(con, f"""
+        INSERT INTO {TBL} (email, first_name, last_name, title, company, category,
             step, status, subject, first_sent_at, last_sent_at, next_due_at, created_at, updated_at)
         VALUES (%s,%s,%s,%s,%s,%s, 1, 'sent', %s,%s,%s,%s,%s,%s)
         ON CONFLICT (email) DO UPDATE SET
@@ -153,21 +159,21 @@ def record_initial_send(con, *, email, first_name, last_name, title, company, ca
 
 
 def get_active(con):
-    return _all(con, "SELECT * FROM contacts WHERE status='sent'")
+    return _all(con, f"SELECT * FROM {TBL} WHERE status='sent'")
 
 
 def get_due_followups(con, now):
-    return _all(con, "SELECT * FROM contacts WHERE status='sent' AND next_due_at IS NOT NULL "
-                     "AND next_due_at <= %s ORDER BY next_due_at", (now,))
+    return _all(con, f"SELECT * FROM {TBL} WHERE status='sent' AND next_due_at IS NOT NULL "
+                     f"AND next_due_at <= %s ORDER BY next_due_at", (now,))
 
 
 def mark_replied(con, email, when):
-    _exec(con, "UPDATE contacts SET status='replied', replied_at=%s, updated_at=%s WHERE email=%s",
+    _exec(con, f"UPDATE {TBL} SET status='replied', replied_at=%s, updated_at=%s WHERE email=%s",
           (when, now_utc(), email.lower()))
 
 
 def mark_bounced(con, email):
-    _exec(con, "UPDATE contacts SET status='bounced', bounced_at=%s, updated_at=%s WHERE email=%s",
+    _exec(con, f"UPDATE {TBL} SET status='bounced', bounced_at=%s, updated_at=%s WHERE email=%s",
           (now_utc(), now_utc(), email.lower()))
 
 
@@ -176,33 +182,33 @@ def advance_after_followup(con, email, step, intervals):
     last = now_utc()
     nxt = compute_next_due(new_step, last, intervals)
     status = "completed" if nxt is None else "sent"
-    _exec(con, "UPDATE contacts SET step=%s, last_sent_at=%s, next_due_at=%s, status=%s, updated_at=%s "
-               "WHERE email=%s", (new_step, last, nxt, status, last, email.lower()))
+    _exec(con, f"UPDATE {TBL} SET step=%s, last_sent_at=%s, next_due_at=%s, status=%s, updated_at=%s "
+               f"WHERE email=%s", (new_step, last, nxt, status, last, email.lower()))
 
 
 def set_error(con, email, detail):
-    _exec(con, "UPDATE contacts SET last_error=%s, updated_at=%s WHERE email=%s",
+    _exec(con, f"UPDATE {TBL} SET last_error=%s, updated_at=%s WHERE email=%s",
           (str(detail)[:300], now_utc(), email.lower()))
 
 
 def counts(con):
-    out = {r["status"]: r["c"] for r in _all(con, "SELECT status, COUNT(*) c FROM contacts GROUP BY status")}
-    out["total"] = _one(con, "SELECT COUNT(*) c FROM contacts")["c"]
-    out["due_now"] = _one(con, "SELECT COUNT(*) c FROM contacts WHERE status='sent' "
-                               "AND next_due_at IS NOT NULL AND next_due_at <= %s", (now_utc(),))["c"]
+    out = {r["status"]: r["c"] for r in _all(con, f"SELECT status, COUNT(*) c FROM {TBL} GROUP BY status")}
+    out["total"] = _one(con, f"SELECT COUNT(*) c FROM {TBL}")["c"]
+    out["due_now"] = _one(con, f"SELECT COUNT(*) c FROM {TBL} WHERE status='sent' "
+                               f"AND next_due_at IS NOT NULL AND next_due_at <= %s", (now_utc(),))["c"]
     return out
 
 
 def report(con):
     """Campaign metrics for the dashboard. step counts emails sent to a contact
     (1 = initial), so (step - 1) is how many follow-ups they received."""
-    row = _one(con, "SELECT COUNT(*) c, COALESCE(SUM(step - 1), 0) fu FROM contacts")
+    row = _one(con, f"SELECT COUNT(*) c, COALESCE(SUM(step - 1), 0) fu FROM {TBL}")
     total = row["c"]
     followups_sent = int(row["fu"])
     by_status = {r["status"]: r["c"]
-                 for r in _all(con, "SELECT status, COUNT(*) c FROM contacts GROUP BY status")}
-    due_now = _one(con, "SELECT COUNT(*) c FROM contacts WHERE status='sent' "
-                        "AND next_due_at IS NOT NULL AND next_due_at <= %s", (now_utc(),))["c"]
+                 for r in _all(con, f"SELECT status, COUNT(*) c FROM {TBL} GROUP BY status")}
+    due_now = _one(con, f"SELECT COUNT(*) c FROM {TBL} WHERE status='sent' "
+                        f"AND next_due_at IS NOT NULL AND next_due_at <= %s", (now_utc(),))["c"]
     replied = by_status.get("replied", 0)
     return {
         "contacts": total,
@@ -221,10 +227,10 @@ def report(con):
 
 # --- Key/value (Microsoft token cache lives here in the cloud) --------------
 def kv_get(con, key):
-    row = _one(con, "SELECT v FROM kv WHERE k = %s", (key,))
+    row = _one(con, f"SELECT v FROM {KV} WHERE k = %s", (key,))
     return row["v"] if row else None
 
 
 def kv_set(con, key, value):
-    _exec(con, "INSERT INTO kv (k, v) VALUES (%s, %s) ON CONFLICT (k) DO UPDATE SET v = excluded.v",
+    _exec(con, f"INSERT INTO {KV} (k, v) VALUES (%s, %s) ON CONFLICT (k) DO UPDATE SET v = excluded.v",
           (key, value))
