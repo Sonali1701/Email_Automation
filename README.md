@@ -268,6 +268,43 @@ The ping also wakes the free (sleeping) web service, so the run always happens.
   daily ping handles this for follow-ups. For a paid always-on instance, pick a
   higher plan.
 
+## Safety: uncertain contacts are skipped, not emailed
+
+To protect client relationships, the tool **does not send** to a contact it can't
+classify confidently. These are **skipped and flagged** (shown as "skipped" in the
+preview, the live send log, and `send_log.csv`) — **no email, no follow-up
+sequence** — so you can fix the data and re-send:
+
+| Situation | Result |
+|---|---|
+| No email / **invalid** email address | skipped |
+| **Duplicate** email in the sheet | skipped (emailed once, not twice) |
+| **Missing/unreadable title** (blank, `Not Provided`, `Pending`, `N/A`, `-`, …) | skipped |
+| Classified as **`other`** (role didn't fit a known category) | skipped |
+| No **title column** detected in the sheet | loud warning + everyone skipped |
+
+A valid **Category Override** in the sheet is treated as a deliberate choice — it
+bypasses the missing-title and `other` skips (you've told it the category). To
+deliberately email everyone with a generic note instead, set overrides or remove
+the screening. The **Preview** screen shows exactly who will send vs. be skipped
+before you commit.
+
+## Safety: Claude failures never send a downgraded email
+
+When "Use Claude" is on, Claude **must** succeed for each contact. If the Claude
+API fails for any reason — **rate limit / quota exceeded**, auth, or network —
+the send **halts immediately** and that contact (and everyone after) is **not
+emailed**. The tool never silently falls back to a plain keyword email when AI
+was requested, so a wrong or under-personalized message can't reach a client.
+
+- Contacts already sent before the failure went out correctly (Claude worked for
+  them); the run just stops at the first failure.
+- The web UI shows a red **"halted"** row and a toast; the CLI prints `HALTED`.
+- To send deterministic emails on purpose (no Claude), untick **Use Claude**
+  (or run `main.py --no-claude`) — that's an explicit choice, not a fallback.
+- **Follow-ups are unaffected** — they use fixed templates (no Claude), so the
+  daily follow-up run keeps working even if the Claude API is down.
+
 ## How classification maps to templates
 
 | Category | Template | Focus phrase example |

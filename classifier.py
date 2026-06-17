@@ -130,12 +130,21 @@ def followup_line(title, company, first_name, step, client, model):
         return None
 
 
+class ClassifierError(RuntimeError):
+    """Raised when AI classification fails (e.g. Claude rate limit / quota
+    exceeded) while Claude was requested. The caller HALTS the send instead of
+    falling back to a non-AI email, so a wrong message never reaches a client."""
+
+
 def classify_contact(title, company, first_name, client=None, model=None, override=None):
-    """Return {'category', 'focus_area', 'opener'} for a contact.
+    """Return {'category', 'focus_area', 'opener', 'subject'} for a contact.
 
     override : optional manual category from the spreadsheet; when valid it
                short-circuits Claude entirely.
-    client   : Anthropic client, or None to use keyword fallback.
+    client   : Anthropic client (AI mode), or None for explicit keyword mode.
+
+    In AI mode (client given), a Claude failure RAISES ClassifierError rather
+    than silently falling back to keyword matching — the caller stops sending.
     """
     if override:
         cat = str(override).strip().lower()
@@ -143,10 +152,14 @@ def classify_contact(title, company, first_name, client=None, model=None, overri
             return {"category": cat, "focus_area": DEFAULT_FOCUS[cat], "opener": None, "subject": None}
 
     if client is not None:
+        # AI mode: Claude MUST succeed. On any failure (rate limit, quota, auth,
+        # network) raise so the run halts. We never silently downgrade to a
+        # non-AI email when Claude was requested.
         try:
             return _classify_ai(title, company, first_name, client, model)
-        except Exception as exc:  # network, parse, auth -> degrade gracefully
-            print(f"  [warn] Claude classification failed ({exc}); using keyword fallback")
+        except Exception as exc:
+            raise ClassifierError(f"Claude API call failed: {exc}") from exc
 
+    # Explicit keyword mode (Claude turned off) — deterministic and intended.
     category, focus_area = classify_keywords(title)
     return {"category": category, "focus_area": focus_area, "opener": None, "subject": None}

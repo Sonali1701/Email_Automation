@@ -15,6 +15,7 @@ import argparse
 import csv
 import datetime as dt
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -22,7 +23,7 @@ import pandas as pd
 from dotenv import load_dotenv
 
 import db
-from classifier import classify_contact, make_anthropic_client
+from classifier import CATEGORIES, ClassifierError, classify_contact, make_anthropic_client
 from graph_mailer import make_graph_mailer
 from templates import render
 
@@ -80,6 +81,47 @@ def load_signature():
     return os.getenv("SENDER_SIGNATURE", "").strip()
 
 
+# --- Contact screening (don't email uncertain contacts to premium clients) ---
+# Title values that mean "no real title".
+JUNK_TITLES = {"", "not provided", "pending", "n/a", "n.a.", "na", "nil", "none",
+               "null", "-", "--", "—", ".", "tbd", "to be decided", "unknown"}
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+def valid_email(email):
+    return bool(_EMAIL_RE.match((email or "").strip()))
+
+
+def title_missing(title):
+    return (title or "").strip().lower() in JUNK_TITLES
+
+
+def has_valid_override(override):
+    return str(override or "").strip().lower() in CATEGORIES
+
+
+def prescreen(email, title, override, seen):
+    """Reason to skip a contact BEFORE classifying (cheap checks), or None.
+    `seen` is the set of lowercased emails already processed this run."""
+    e = (email or "").strip().lower()
+    if not e:
+        return "no email address"
+    if not valid_email(e):
+        return "invalid email address"
+    if e in seen:
+        return "duplicate email"
+    # A valid manual override is a deliberate choice, so a missing title is OK.
+    if not has_valid_override(override) and title_missing(title):
+        return "missing/unreadable title"
+    return None
+
+
+def skip_other(category, override):
+    """Skip an auto-classified 'other' (uncertain) contact, unless the user
+    deliberately set the category via override."""
+    return category == "other" and not has_valid_override(override)
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="Radixsol email automation")
     p.add_argument("--excel", default="contacts.xlsx", help="path to the contacts spreadsheet")
@@ -117,7 +159,8 @@ def main():
     model = os.getenv("ANTHROPIC_MODEL", DEFAULT_MODEL)
     client = None if args.no_claude else make_anthropic_client()
     if client is None and not args.no_claude:
-        print("[info] No ANTHROPIC_API_KEY set; using keyword classification.")
+        sys.exit("Claude is enabled but ANTHROPIC_API_KEY is not set. "
+                 "Set the key, or pass --no-claude to send deterministic (keyword) emails.")
 
     # Set up the mailer (and confirm the signed-in account) unless this is a dry run.
     mailer = None
@@ -144,7 +187,12 @@ def main():
     if args.dry_run:
         preview_dir.mkdir(exist_ok=True)
 
+    if "title" not in cols:
+        print("[warn] No title column detected — every contact will be skipped as "
+              "'missing title'. Check your spreadsheet headers.")
+
     results = []
+    seen = set()
     for n, (idx, row) in enumerate(rows, start=1):
         email = cell(row, cols, "email")
         title = cell(row, cols, "title")
@@ -152,16 +200,31 @@ def main():
         override = cell(row, cols, "category")
         first_name = first_name_of(row, cols)
 
-        # Silently skip fully-blank trailing rows; only flag rows that have real
-        # data but are missing an address.
+        # Silently skip fully-blank trailing rows.
         if not any((email, title, company, override, cell(row, cols, "last_name"))):
             continue
-        if not email:
-            print(f"[{n}] (row {idx}) skipped - no email address")
-            results.append(_log_row(first_name, email, company, title, "-", "-", "skipped", "no email"))
+
+        # Cheap pre-checks: skip (and flag) before spending a Claude call.
+        reason = prescreen(email, title, override, seen)
+        if reason:
+            print(f"[{n}] {email or '(no email)'} - SKIPPED: {reason}")
+            results.append(_log_row(first_name, email, company, title, "-", email or "-", "skipped", reason))
+            continue
+        seen.add(email.strip().lower())
+
+        try:
+            info = classify_contact(title, company, first_name, client=client, model=model, override=override)
+        except ClassifierError as exc:
+            print(f"\nHALTED at row {idx}: {exc}\n"
+                  f"Stopped to avoid sending non-AI emails. {len(results)} processed so far.")
+            break
+
+        # Skip uncertain 'other' classifications (unless deliberately overridden).
+        if skip_other(info["category"], override):
+            print(f"[{n}] {email} - SKIPPED: uncertain role ('other')")
+            results.append(_log_row(first_name, email, company, title, "other", email, "skipped", "uncertain role (other)"))
             continue
 
-        info = classify_contact(title, company, first_name, client=client, model=model, override=override)
         subject, body = render(info["category"], info["focus_area"], info["opener"], first_name, company, subject=info.get("subject"))
         full_body = f"{body}\n\n{signature}" if signature else body
         recipient = args.test_email or email

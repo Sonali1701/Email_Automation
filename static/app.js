@@ -160,18 +160,34 @@ $("#preview-btn").onclick = async () => {
 
 function renderPreview(d) {
   $("#preview-card").classList.remove("hidden");
-  $("#preview-count").textContent = `· ${d.count} email${d.count === 1 ? "" : "s"}` +
+  const skippedCount = d.count - (d.sendable ?? d.count);
+  $("#preview-count").textContent =
+    `· ${d.sendable ?? d.count} will send` +
+    (skippedCount ? ` · ${skippedCount} skipped` : "") +
     (d.claude_used ? "" : " · keyword mode");
   const list = $("#preview-list");
   list.innerHTML = "";
+  if (d.no_title_column) {
+    list.appendChild(el("div", "fu-note muted",
+      "⚠ No title column detected in your sheet — everyone is being skipped as 'missing title'. Check your headers."));
+  }
   d.contacts.forEach((c) => {
     const row = el("div", "preview-row");
-    row.innerHTML =
-      `<span class="badge ${c.category}">${esc(c.category)}</span>` +
-      `<div class="grow"><div class="who">${esc(c.first_name) || "(no name)"} ` +
-      `<span class="meta">· ${esc(c.email)}</span></div>` +
-      `<div class="subject">${esc(c.subject)}</div></div>`;
-    row.onclick = () => openEmail(c);
+    if (c.skipped) {
+      row.classList.add("skipped-row");
+      row.innerHTML =
+        `<span class="status-pill error">skipped</span>` +
+        `<div class="grow"><div class="who">${esc(c.first_name) || "(no name)"} ` +
+        `<span class="meta">· ${esc(c.email) || "(no email)"}</span></div>` +
+        `<div class="subject">${esc(c.skip_reason)} — no email will be sent</div></div>`;
+    } else {
+      row.innerHTML =
+        `<span class="badge ${c.category}">${esc(c.category)}</span>` +
+        `<div class="grow"><div class="who">${esc(c.first_name) || "(no name)"} ` +
+        `<span class="meta">· ${esc(c.email)}</span></div>` +
+        `<div class="subject">${esc(c.subject)}</div></div>`;
+      row.onclick = () => openEmail(c);
+    }
     list.appendChild(row);
   });
   $("#preview-card").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -233,7 +249,10 @@ async function readStream(body, handler) {
 }
 
 function handleEvent(ev) {
-  if (ev.type === "start") {
+  if (ev.type === "warn") {
+    $("#progress-list").appendChild(el("div", "progress-row",
+      `<span class="status-pill error">warning</span><span class="grow">${esc(ev.message)}</span>`));
+  } else if (ev.type === "start") {
     $("#progress-summary").textContent =
       (ev.dry_run ? "Dry run · " : "") + `Processing ${ev.total} contact${ev.total === 1 ? "" : "s"}…`;
   } else if (ev.type === "progress") {
@@ -247,12 +266,27 @@ function handleEvent(ev) {
     if (ev.status === "error") row.title = ev.detail;
     $("#progress-list").appendChild(row);
     $("#progress-list").scrollTop = $("#progress-list").scrollHeight;
+  } else if (ev.type === "skipped") {
+    $("#progress-fill").style.width = Math.round((ev.index / ev.total) * 100) + "%";
+    const row = el("div", "progress-row");
+    row.innerHTML =
+      `<span class="status-pill error">skipped</span>` +
+      `<span class="grow">${esc(ev.first_name) || "(no name)"} · ${esc(ev.email) || "(no email)"} — ${esc(ev.reason)}</span>`;
+    $("#progress-list").appendChild(row);
+    $("#progress-list").scrollTop = $("#progress-list").scrollHeight;
+  } else if (ev.type === "halted") {
+    const row = el("div", "progress-row");
+    row.innerHTML = `<span class="status-pill error">halted</span>` +
+      `<span class="grow">Claude unavailable — stopped to avoid wrong emails. ${esc(ev.reason)}</span>`;
+    $("#progress-list").appendChild(row);
+    toast("Halted: Claude API error — no further emails sent", true);
   } else if (ev.type === "done") {
     const verb = $("#dry-run").checked ? "previewed" : "sent";
-    let msg = `Done · ${ev.sent} ${verb}`;
+    let msg = ev.halted ? `Halted · ${ev.sent} ${verb} before stopping` : `Done · ${ev.sent} ${verb}`;
+    if (ev.skipped) msg += ` · ${ev.skipped} skipped`;
     if (ev.failed) msg += ` · ${ev.failed} failed`;
     $("#progress-summary").textContent = msg;
-    toast(msg, ev.failed > 0);
+    toast(msg, ev.failed > 0 || ev.halted);
   }
 }
 

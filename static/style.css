@@ -116,6 +116,8 @@ tbody tr:hover { background: #f7f9fd; }
   border: 1px solid var(--line); border-radius: 10px; cursor: pointer; background: #fff;
 }
 .preview-row:hover { border-color: var(--brand); background: #f7f9fd; }
+.preview-row.skipped-row { cursor: default; background: #fbf7f5; border-color: #f0dcd6; opacity: .85; }
+.preview-row.skipped-row:hover { border-color: #f0dcd6; background: #fbf7f5; }
 .preview-row .who { font-weight: 600; }
 .preview-row .meta { color: var(--muted); font-size: 12.5px; }
 .preview-row .grow { flex: 1; min-width: 0; }

@@ -29,9 +29,10 @@ from flask import Flask, Response, jsonify, request, send_file, stream_with_cont
 
 import db
 import followups
-from classifier import classify_contact, make_anthropic_client
+from classifier import ClassifierError, classify_contact, make_anthropic_client
 from graph_mailer import make_graph_mailer
-from main import DEFAULT_MODEL, _log_row, _write_log, cell, first_name_of, load_signature, resolve_columns
+from main import (DEFAULT_MODEL, _log_row, _write_log, cell, first_name_of, has_valid_override,
+                  load_signature, prescreen, resolve_columns, skip_other)
 from templates import render
 
 load_dotenv()
@@ -210,13 +211,33 @@ def preview():
     limit = data.get("limit")
     use_claude = data.get("use_claude", True)
 
-    info = read_contacts(limit=limit)
     client = make_anthropic_client() if use_claude else None
+    if use_claude and client is None:
+        return jsonify({"error": "Claude is enabled but ANTHROPIC_API_KEY is not set."}), 400
+
+    info = read_contacts(limit=limit)
     model = os.getenv("ANTHROPIC_MODEL", DEFAULT_MODEL)
     signature = load_signature()
 
-    out = [build_email(c, client, model, signature) for c in info["contacts"]]
-    return jsonify({"count": len(out), "contacts": out, "claude_used": client is not None})
+    out, seen = [], set()
+    try:
+        for c in info["contacts"]:
+            reason = prescreen(c["email"], c["title"], c["category_override"], seen)
+            if reason:
+                out.append({**c, "skipped": True, "skip_reason": reason})
+                continue
+            seen.add(c["email"].strip().lower())
+            email = build_email(c, client, model, signature)
+            if skip_other(email["category"], c["category_override"]):
+                out.append({**c, "category": "other", "skipped": True, "skip_reason": "uncertain role (other)"})
+                continue
+            out.append({**email, "skipped": False})
+    except ClassifierError as exc:
+        return jsonify({"error": str(exc), "claude_error": True}), 502
+    sendable = sum(1 for o in out if not o.get("skipped"))
+    return jsonify({"count": len(out), "sendable": sendable, "contacts": out,
+                    "claude_used": client is not None,
+                    "no_title_column": "title" not in info["columns"]})
 
 
 # --- Send (streaming NDJSON) ----------------------------------------------
@@ -240,21 +261,60 @@ def send():
         if not acct:
             return jsonify({"error": "Not signed in. Sign in to Microsoft first."}), 401
 
-    info = read_contacts(limit=limit)
     client = make_anthropic_client() if use_claude else None
+    if use_claude and client is None:
+        return jsonify({"error": "Claude is enabled but ANTHROPIC_API_KEY is not set."}), 400
+
+    info = read_contacts(limit=limit)
     model = os.getenv("ANTHROPIC_MODEL", DEFAULT_MODEL)
     signature = load_signature()
 
     def generate():
         total = len(info["contacts"])
+        if "title" not in info["columns"]:
+            yield json.dumps({"type": "warn", "message": "No title column detected — all "
+                              "contacts will be skipped as 'missing title'."}) + "\n"
         yield json.dumps({"type": "start", "total": total, "dry_run": dry_run}) + "\n"
         con = db.connect()
         intervals = db.get_intervals()
         log_rows = []
-        sent = failed = 0
+        sent = failed = skipped = 0
+        seen = set()
+        halted = None
         try:
             for i, c in enumerate(info["contacts"], start=1):
-                email = build_email(c, client, model, signature)
+                # Cheap screening first: skip (and flag) uncertain contacts so a
+                # generic/wrong email never reaches a premium client.
+                reason = prescreen(c["email"], c["title"], c["category_override"], seen)
+                if reason:
+                    skipped += 1
+                    log_rows.append(_log_row(c["first_name"], c["email"], c["company"], c["title"],
+                                             "-", c["email"] or "-", "skipped", reason))
+                    yield json.dumps({"type": "skipped", "index": i, "total": total,
+                                      "email": c["email"], "first_name": c["first_name"],
+                                      "reason": reason}) + "\n"
+                    continue
+                seen.add(c["email"].strip().lower())
+
+                # Build the email. If Claude is required and fails (rate limit/
+                # quota), HALT — do not send a non-AI email to a client.
+                try:
+                    email = build_email(c, client, model, signature)
+                except ClassifierError as exc:
+                    halted = str(exc)
+                    yield json.dumps({"type": "halted", "reason": halted, "index": i, "sent": sent}) + "\n"
+                    break
+
+                # Skip uncertain 'other' (unless deliberately overridden).
+                if skip_other(email["category"], c["category_override"]):
+                    skipped += 1
+                    log_rows.append(_log_row(c["first_name"], c["email"], c["company"], c["title"],
+                                             "other", c["email"], "skipped", "uncertain role (other)"))
+                    yield json.dumps({"type": "skipped", "index": i, "total": total,
+                                      "email": c["email"], "first_name": c["first_name"],
+                                      "reason": "uncertain role (other)"}) + "\n"
+                    continue
+
                 recipient = test_email or c["email"]
                 if dry_run:
                     status, detail = "preview", "dry-run"
@@ -286,7 +346,8 @@ def send():
             con.close()
         if not dry_run:
             _write_log(log_rows)
-        yield json.dumps({"type": "done", "sent": sent, "failed": failed, "total": total}) + "\n"
+        yield json.dumps({"type": "done", "sent": sent, "failed": failed, "skipped": skipped,
+                          "total": total, "halted": bool(halted)}) + "\n"
 
     return Response(stream_with_context(generate()), mimetype="application/x-ndjson")
 
