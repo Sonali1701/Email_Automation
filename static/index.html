@@ -85,6 +85,41 @@
       <p class="fu-note muted">Set up the daily scheduled task (see README) and follow-ups send <strong>automatically</strong>. This button is only for on-demand runs and testing.</p>
       <div id="fu-progress" class="progress-list"></div>
     </section>
+
+    <!-- 6. Greetings -->
+    <section class="card" id="greet-card">
+      <h2><span class="step">6</span> Festival Greetings <span class="muted">· one-time wish</span></h2>
+      <div class="options-grid">
+        <label class="field">Audience (template)
+          <select id="greet-audience">
+            <option value="candidate">Candidates</option>
+            <option value="client">Clients</option>
+          </select>
+        </label>
+        <label class="field">Test email <span class="muted">(send all here)</span>
+          <input type="email" id="greet-test-email" placeholder="you@radixsol.com">
+        </label>
+        <label class="field">Limit
+          <input type="number" id="greet-limit" min="1" placeholder="all rows">
+        </label>
+        <label class="field">Delay between sends (s)
+          <input type="number" id="greet-delay" min="1" step="0.5" value="3">
+        </label>
+        <label class="check"><input type="checkbox" id="greet-dry-run"> Dry run (build but don't send)</label>
+      </div>
+      <div id="greet-dropzone" class="dropzone" style="margin-top:14px">
+        <input type="file" id="greet-file-input" accept=".xlsx,.xls" hidden>
+        <p>Drag the greeting sheet (name + email) here, or <button id="greet-browse-btn" class="link">browse</button></p>
+        <p class="muted">Auto-detects the name and email columns. Skips invalid/duplicate emails.</p>
+      </div>
+      <div id="greet-summary" class="summary hidden"></div>
+      <div class="actions">
+        <button id="greet-send-btn" class="btn primary" disabled>Send greetings</button>
+      </div>
+      <div class="progressbar" style="margin-top:8px"><div id="greet-fill"></div></div>
+      <div id="greet-status" class="muted"></div>
+      <p class="fu-note muted">Sent as individual, personalized, plain-text emails through your Microsoft 365 mailbox, paced to avoid spam filtering. Keep this tab open while it runs.</p>
+    </section>
   </main>
 
   <!-- Email viewer -->

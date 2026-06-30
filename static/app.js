@@ -374,6 +374,83 @@ $("#fu-refresh").onclick = loadFollowupStatus;
 $("#fu-dry").onclick = () => runFollowups(true);
 $("#fu-run").onclick = () => runFollowups(false);
 
+// --- Greetings -------------------------------------------------------------
+let greetReady = false;
+let greetTimer = null;
+const gdz = $("#greet-dropzone");
+$("#greet-browse-btn").onclick = () => $("#greet-file-input").click();
+$("#greet-file-input").onchange = (e) => { if (e.target.files[0]) greetUpload(e.target.files[0]); };
+["dragover", "dragenter"].forEach((ev) => gdz.addEventListener(ev, (e) => { e.preventDefault(); gdz.classList.add("drag"); }));
+["dragleave", "drop"].forEach((ev) => gdz.addEventListener(ev, (e) => { e.preventDefault(); gdz.classList.remove("drag"); }));
+gdz.addEventListener("drop", (e) => { const f = e.dataTransfer.files[0]; if (f) greetUpload(f); });
+
+async function greetUpload(file) {
+  const fd = new FormData();
+  fd.append("file", file);
+  try {
+    const r = await fetch("/api/greetings/upload", { method: "POST", body: fd });
+    const d = await r.json();
+    if (!r.ok) { toast(d.error || "Upload failed", true); return; }
+    const b = d.breakdown;
+    $("#greet-summary").classList.remove("hidden");
+    $("#greet-summary").innerHTML =
+      `${d.rows} rows · name: <b>${esc(d.name_column)}</b>, email: <b>${esc(d.email_column)}</b><br>` +
+      `<b>${b.sendable}</b> will be greeted · ${b.duplicate} duplicates · ${b.invalid} invalid · ${b.no_email} no-email · ${b.no_name} no-name`;
+    greetReady = true;
+    $("#greet-send-btn").disabled = false;
+    toast(`${b.sendable} recipients ready`);
+  } catch (e) { toast(e.message, true); }
+}
+
+$("#greet-send-btn").onclick = async () => {
+  if (!greetReady) { toast("Upload a greeting sheet first", true); return; }
+  const dry = $("#greet-dry-run").checked;
+  const testEmail = $("#greet-test-email").value.trim();
+  if (!dry && !signedIn) { toast("Sign in to Microsoft first", true); startSignin(); return; }
+  const aud = $("#greet-audience").value;
+  if (!dry) {
+    const who = testEmail ? `as a TEST to ${testEmail}` : `to the REAL ${aud}s`;
+    if (!confirm(`Send Independence Day greetings ${who}?`)) return;
+  }
+  const body = {
+    audience: aud, dry_run: dry, test_email: testEmail,
+    limit: $("#greet-limit").value ? parseInt($("#greet-limit").value, 10) : null,
+    delay: parseFloat($("#greet-delay").value || "3"),
+  };
+  try {
+    const r = await fetch("/api/greetings/run", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    const d = await r.json();
+    if (!r.ok) { toast(d.error || "Failed to start", true); return; }
+    $("#greet-send-btn").disabled = true;
+    pollGreetings();
+  } catch (e) { toast(e.message, true); }
+};
+
+function pollGreetings() {
+  clearInterval(greetTimer);
+  const tick = async () => {
+    try {
+      const s = await (await fetch("/api/greetings/status")).json();
+      const done = s.total ? s.sent + s.skipped + s.failed : 0;
+      const pct = s.total ? Math.round((done / s.total) * 100) : 0;
+      $("#greet-fill").style.width = pct + "%";
+      let msg = `${s.sent} sent · ${s.skipped} skipped` + (s.failed ? ` · ${s.failed} failed` : "") +
+        (s.total ? ` of ${s.total}` : "") + (s.last ? ` — ${esc(s.last)}` : "");
+      if (s.error) msg = `Error: ${esc(s.error)}`;
+      $("#greet-status").innerHTML = msg;
+      if (!s.running) {
+        clearInterval(greetTimer);
+        $("#greet-send-btn").disabled = false;
+        if (s.done) toast(`Greetings done · ${s.sent} sent, ${s.skipped} skipped` + (s.failed ? `, ${s.failed} failed` : ""), s.failed > 0);
+      }
+    } catch (e) { /* keep polling */ }
+  };
+  tick();
+  greetTimer = setInterval(tick, 2000);
+}
+
 // --- Init ------------------------------------------------------------------
 loadStatus();
 loadFollowupStatus();

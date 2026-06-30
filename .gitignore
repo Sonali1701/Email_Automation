@@ -8,6 +8,8 @@ send_log.csv
 contacts.xlsx
 uploads/
 outreach.db
+greetings_log.csv
+greetings_sent.csv
 *.log
 *.stackdump
 .idea/

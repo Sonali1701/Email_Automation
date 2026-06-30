@@ -29,6 +29,7 @@ from flask import Flask, Response, jsonify, request, send_file, stream_with_cont
 
 import db
 import followups
+import greetings
 from classifier import ClassifierError, classify_contact, make_anthropic_client
 from graph_mailer import make_graph_mailer
 from main import (DEFAULT_MODEL, _log_row, _write_log, cell, first_name_of, has_valid_override,
@@ -64,6 +65,13 @@ _cron_running = threading.Event()
 UPLOAD_DIR = Path("uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
 CONTACTS_XLSX = UPLOAD_DIR / "contacts.xlsx"
+GREETINGS_XLSX = UPLOAD_DIR / "greetings.xlsx"
+
+# Background greeting-send progress (the batch runs in a thread so it survives
+# the request timeout; the UI polls /api/greetings/status).
+_greet_state = {"running": False, "audience": None, "total": 0, "sent": 0,
+                "skipped": 0, "failed": 0, "done": False, "error": None, "last": "", "dry_run": False}
+_greet_lock = threading.Lock()
 
 # Singleton mailer + sign-in state shared across requests.
 _mailer = None
@@ -428,6 +436,91 @@ def cron_followups():
     _cron_running.set()
     threading.Thread(target=_run_cron_job, daemon=True).start()
     return jsonify({"status": "started"}), 202
+
+
+# --- Greetings (one-time festival wishes, background sender) ----------------
+@app.post("/api/greetings/upload")
+def greetings_upload():
+    f = request.files.get("file")
+    if not f or not f.filename:
+        return jsonify({"error": "No file uploaded"}), 400
+    if not f.filename.lower().endswith((".xlsx", ".xls")):
+        return jsonify({"error": "Please upload an .xlsx file"}), 400
+    f.save(GREETINGS_XLSX)
+    try:
+        df = pd.read_excel(GREETINGS_XLSX, dtype=str)
+    except Exception as exc:
+        return jsonify({"error": f"Could not read spreadsheet: {exc}"}), 400
+    name_col, email_col = greetings.detect_columns(df)
+    if email_col is None:
+        return jsonify({"error": f"No email column found. Columns: {list(df.columns)}"}), 400
+    return jsonify({
+        "rows": len(df), "name_column": str(name_col), "email_column": str(email_col),
+        "breakdown": greetings.breakdown(df, name_col, email_col),
+    })
+
+
+def _run_greetings(audience, dry_run, test_email, limit, delay):
+    try:
+        df = pd.read_excel(GREETINGS_XLSX, dtype=str)
+        name_col, email_col = greetings.detect_columns(df)
+        mailer = None if dry_run else get_mailer()
+        for ev in greetings.process(df, name_col, email_col, audience, mailer,
+                                    dry_run=dry_run, test_email=test_email, limit=limit, delay=delay):
+            with _greet_lock:
+                if ev["type"] == "start":
+                    _greet_state.update(total=ev["total"], sent=0, skipped=0, failed=0, done=False)
+                elif ev["type"] == "progress":
+                    if ev["status"] == "sent":
+                        _greet_state["sent"] += 1
+                    elif ev["status"] == "error":
+                        _greet_state["failed"] += 1
+                    _greet_state["last"] = f"{ev['index']}/{ev['total']} -> {ev['email']} ({ev['status']})"
+                elif ev["type"] == "skipped":
+                    _greet_state["skipped"] += 1
+                    _greet_state["last"] = f"{ev['index']}/{ev['total']} skipped {ev['email'] or '(no email)'} ({ev['reason']})"
+                elif ev["type"] == "done":
+                    _greet_state["done"] = True
+    except Exception as exc:
+        with _greet_lock:
+            _greet_state["error"] = str(exc)
+    finally:
+        with _greet_lock:
+            _greet_state["running"] = False
+
+
+@app.post("/api/greetings/run")
+def greetings_run():
+    data = request.get_json(silent=True) or {}
+    audience = data.get("audience")
+    if audience not in ("client", "candidate"):
+        return jsonify({"error": "Choose audience: client or candidate"}), 400
+    if not GREETINGS_XLSX.exists():
+        return jsonify({"error": "Upload a greeting sheet first"}), 400
+    dry_run = bool(data.get("dry_run"))
+    test_email = (data.get("test_email") or "").strip() or None
+    limit = data.get("limit")
+    delay = float(data.get("delay", 3))
+    if not dry_run:
+        try:
+            if not get_mailer().get_account_silent():
+                return jsonify({"error": "Not signed in to Microsoft."}), 401
+        except Exception as exc:
+            return jsonify({"error": str(exc)}), 400
+    with _greet_lock:
+        if _greet_state["running"]:
+            return jsonify({"status": "already running"}), 202
+        _greet_state.update(running=True, audience=audience, dry_run=dry_run, error=None,
+                            done=False, total=0, sent=0, skipped=0, failed=0, last="starting…")
+    threading.Thread(target=_run_greetings, args=(audience, dry_run, test_email, limit, delay),
+                     daemon=True).start()
+    return jsonify({"status": "started"}), 202
+
+
+@app.get("/api/greetings/status")
+def greetings_status():
+    with _greet_lock:
+        return jsonify(dict(_greet_state))
 
 
 if __name__ == "__main__":

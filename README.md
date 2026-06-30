@@ -268,6 +268,36 @@ The ping also wakes the free (sleeping) web service, so the run always happens.
   daily ping handles this for follow-ups. For a paid always-on instance, pick a
   higher plan.
 
+## Festival greetings (one-time wishes)
+
+A separate, simple feature for holiday wishes (e.g. Independence Day) to clients
+or candidates — no Claude, no classification, no follow-ups. In the web UI, the
+**Festival Greetings** card lets you pick the audience (which template), drag in
+a sheet (name + email), preview the breakdown, and send with live progress. The
+send runs in the background so a big batch doesn't time out — **keep the tab open
+while it runs.** Re-runs are safe (a `greetings_sent.csv` ledger skips anyone
+already greeted). CLI equivalent: `python greetings.py --audience candidate
+--excel "<sheet>" --dry-run` (then without `--dry-run`).
+
+### Staying out of spam
+
+No tool can *guarantee* inbox placement, but this does everything in its control:
+each recipient gets an **individual, personalized, plain-text** email (never a
+big BCC), with **no links/images/attachments** and clean subject lines, **paced**
+(default 3s between sends) so Microsoft 365 doesn't flag the batch as a burst.
+
+The biggest factors are at the **domain level** — confirm these for `radixsol.com`
+(your IT/M365 admin):
+
+- **SPF, DKIM, DMARC** are configured and passing. In particular, enable
+  **DKIM signing for radixsol.com** in the Microsoft 365 Defender portal
+  (Email & collaboration → Policies → DKIM). M365's shared SPF/DKIM works, but
+  custom DKIM for your domain materially improves trust.
+- **Volume/reputation:** a one-time burst of hundreds to mostly personal
+  Gmail/Hotmail addresses can still be filtered (or land in Gmail's *Promotions*
+  tab) regardless of auth. Spreading the send over a couple of sittings (use the
+  **Limit** field) and sending to engaged contacts first both help.
+
 ## Safety: uncertain contacts are skipped, not emailed
 
 To protect client relationships, the tool **does not send** to a contact it can't
