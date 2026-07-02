@@ -460,13 +460,14 @@ def greetings_upload():
     })
 
 
-def _run_greetings(audience, dry_run, test_email, limit, delay):
+def _run_greetings(audience, dry_run, test_email, limit, delay, include_image):
     try:
         df = pd.read_excel(GREETINGS_XLSX, dtype=str)
         name_col, email_col = greetings.detect_columns(df)
         mailer = None if dry_run else get_mailer()
         for ev in greetings.process(df, name_col, email_col, audience, mailer,
-                                    dry_run=dry_run, test_email=test_email, limit=limit, delay=delay):
+                                    dry_run=dry_run, test_email=test_email, limit=limit,
+                                    delay=delay, include_image=include_image):
             with _greet_lock:
                 if ev["type"] == "start":
                     _greet_state.update(total=ev["total"], sent=0, skipped=0, failed=0, done=False)
@@ -501,6 +502,7 @@ def greetings_run():
     test_email = (data.get("test_email") or "").strip() or None
     limit = data.get("limit")
     delay = float(data.get("delay", 3))
+    include_image = data.get("include_image", True)
     if not dry_run:
         try:
             if not get_mailer().get_account_silent():
@@ -512,7 +514,8 @@ def greetings_run():
             return jsonify({"status": "already running"}), 202
         _greet_state.update(running=True, audience=audience, dry_run=dry_run, error=None,
                             done=False, total=0, sent=0, skipped=0, failed=0, last="starting…")
-    threading.Thread(target=_run_greetings, args=(audience, dry_run, test_email, limit, delay),
+    threading.Thread(target=_run_greetings,
+                     args=(audience, dry_run, test_email, limit, delay, include_image),
                      daemon=True).start()
     return jsonify({"status": "started"}), 202
 

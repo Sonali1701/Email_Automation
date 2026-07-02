@@ -22,6 +22,8 @@ time, so a crash/throttle mid-batch won't double-send.
 import argparse
 import csv
 import datetime as dt
+import html as _htmlmod
+import io
 import os
 import re
 import sys
@@ -34,6 +36,11 @@ from dotenv import load_dotenv
 from graph_mailer import make_graph_mailer
 
 load_dotenv()
+
+# Festival banner image embedded at the top of each greeting (inline, via CID).
+WISH_IMAGE = Path("wish.png")
+WISH_CID = "wishflag"
+_WISH_CACHE = None
 
 # --- Templates (wording preserved from Independance_template) ----------------
 CLIENT_BODY = """Hi {first_name},
@@ -81,6 +88,52 @@ def valid_email(email):
 def first_name_of(name):
     parts = (name or "").strip().split()
     return parts[0] if parts else ""
+
+
+def wish_image():
+    """Return the banner as an inline-image dict (resized small for email), or
+    None if the file is missing. Cached after first load."""
+    global _WISH_CACHE
+    if _WISH_CACHE is not None:
+        return _WISH_CACHE or None
+    if not WISH_IMAGE.exists():
+        _WISH_CACHE = False
+        return None
+    data = WISH_IMAGE.read_bytes()
+    try:
+        from PIL import Image
+        im = Image.open(io.BytesIO(data))
+        target = 600
+        if im.width > target:
+            im = im.resize((target, round(im.height * target / im.width)))
+        if im.mode in ("RGBA", "LA", "P"):  # flatten transparency onto white
+            im = im.convert("RGBA")
+            bg = Image.new("RGB", im.size, "white")
+            bg.paste(im, mask=im.split()[-1])
+            im = bg
+        else:
+            im = im.convert("RGB")
+        buf = io.BytesIO()
+        im.save(buf, format="PNG", optimize=True)
+        data = buf.getvalue()
+    except Exception:
+        pass  # Pillow missing/failed -> embed the original bytes
+    _WISH_CACHE = {"cid": WISH_CID, "name": "independence-day.png",
+                   "content_type": "image/png", "data": data}
+    return _WISH_CACHE
+
+
+def html_body(audience, first_name, with_image):
+    """HTML greeting: banner image (optional) above the personalized text."""
+    text = GREETINGS[audience]["body"].format(first_name=first_name)
+    escaped = _htmlmod.escape(text).replace("\n", "<br>")
+    img = ""
+    if with_image:
+        img = (f'<img src="cid:{WISH_CID}" alt="Happy Independence Day" '
+               f'style="display:block;width:100%;max-width:560px;height:auto;margin:0 auto 18px">')
+    return (f'<div style="font-family:Calibri,Arial,Helvetica,sans-serif;font-size:11pt;'
+            f'color:#1c2331;max-width:600px;margin:0 auto">{img}'
+            f'<div style="line-height:1.55">{escaped}</div></div>')
 
 
 def find_col(df, keywords):
@@ -161,11 +214,12 @@ def write_log(rows):
 
 
 def process(df, name_col, email_col, audience, mailer, *, dry_run=False,
-            test_email=None, limit=None, delay=3.0, body_type="Text"):
+            test_email=None, limit=None, delay=3.0, body_type="Text", include_image=True):
     """Generator yielding progress events. Shared by the CLI and the web app.
     Real sends append to the ledger and skip anyone already greeted."""
     tpl = GREETINGS[audience]
     ledger = load_ledger(audience) if (not dry_run and not test_email) else set()
+    img = wish_image() if include_image else None
     rows = [(cellval(r, name_col), cellval(r, email_col)) for _, r in df.iterrows()]
     if limit:
         rows = rows[: int(limit)]
@@ -200,8 +254,12 @@ def process(df, name_col, email_col, audience, mailer, *, dry_run=False,
                    "first_name": first, "status": "preview"}
             continue
 
-        ok, detail = mailer.send(recipient, tpl["subject"], tpl["body"].format(first_name=first),
-                                 body_type=body_type)
+        if img:
+            ok, detail = mailer.send(recipient, tpl["subject"], html_body(audience, first, True),
+                                     body_type="HTML", raw_html=True, inline_images=[img])
+        else:
+            ok, detail = mailer.send(recipient, tpl["subject"], tpl["body"].format(first_name=first),
+                                     body_type=body_type)
         if ok and not test_email:
             append_ledger(audience, email, name)
         log_rows.append(_logrow(audience, name, email, recipient, "sent" if ok else "error", detail))
@@ -224,6 +282,7 @@ def parse_args():
     p.add_argument("--test-email", default=None, help="send every greeting to this address instead")
     p.add_argument("--limit", type=int, default=None, help="process at most N contacts")
     p.add_argument("--delay", type=float, default=3.0, help="seconds between sends")
+    p.add_argument("--no-image", action="store_true", help="send plain text without the banner image")
     p.add_argument("--body-type", choices=("Text", "HTML"), default=os.getenv("BODY_TYPE", "Text"))
     return p.parse_args()
 
@@ -255,9 +314,11 @@ def main():
             sys.exit("Aborted.")
 
     sent = skipped = failed = 0
+    if not args.no_image and not wish_image():
+        print("[warn] wish.png not found — sending plain text without the banner image.")
     for ev in process(df, name_col, email_col, args.audience, mailer, dry_run=args.dry_run,
                       test_email=args.test_email, limit=args.limit, delay=args.delay,
-                      body_type=args.body_type):
+                      body_type=args.body_type, include_image=not args.no_image):
         if ev["type"] == "progress":
             if ev["status"] == "sent":
                 sent += 1

@@ -11,6 +11,7 @@ See README.md for the full walkthrough.
 """
 
 import atexit
+import base64
 import html
 import os
 import re
@@ -167,11 +168,20 @@ class GraphMailer:
         data = r.json()
         return data.get("displayName", "?"), data.get("userPrincipalName") or data.get("mail", "?")
 
-    def send(self, to, subject, body, body_type="Text", cc=None, save_to_sent=True):
-        """Send a single email. Returns (ok: bool, detail: str)."""
+    def send(self, to, subject, body, body_type="Text", cc=None, save_to_sent=True,
+             inline_images=None, raw_html=False):
+        """Send a single email. Returns (ok: bool, detail: str).
+
+        inline_images: optional list of dicts embedded via CID so they render
+        without a 'download images' prompt, each:
+            {"cid": "flag", "name": "x.png", "content_type": "image/png", "data": b"..."}
+        raw_html: when True and body_type == 'HTML', `body` is used as-is (already
+        HTML) instead of being escaped/wrapped.
+        """
         token = self._token()
         if body_type.lower() == "html":
-            content_type, content = "HTML", _to_html(body)
+            content_type = "HTML"
+            content = body if raw_html else _to_html(body)
         else:
             content_type, content = "Text", body
 
@@ -182,6 +192,15 @@ class GraphMailer:
         }
         if cc:
             message["ccRecipients"] = [{"emailAddress": {"address": a}} for a in cc]
+        if inline_images:
+            message["attachments"] = [{
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "name": img.get("name", "image.png"),
+                "contentType": img.get("content_type", "image/png"),
+                "contentBytes": base64.b64encode(img["data"]).decode("ascii"),
+                "isInline": True,
+                "contentId": img["cid"],
+            } for img in inline_images]
 
         payload = {"message": message, "saveToSentItems": bool(save_to_sent)}
         r = requests.post(

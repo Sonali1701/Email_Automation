@@ -414,6 +414,7 @@ $("#greet-send-btn").onclick = async () => {
   }
   const body = {
     audience: aud, dry_run: dry, test_email: testEmail,
+    include_image: $("#greet-image").checked,
     limit: $("#greet-limit").value ? parseInt($("#greet-limit").value, 10) : null,
     delay: parseFloat($("#greet-delay").value || "3"),
   };

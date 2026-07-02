@@ -279,6 +279,16 @@ while it runs.** Re-runs are safe (a `greetings_sent.csv` ledger skips anyone
 already greeted). CLI equivalent: `python greetings.py --audience candidate
 --excel "<sheet>" --dry-run` (then without `--dry-run`).
 
+### The banner image
+
+Greetings include the `wish.png` banner **embedded inline** (a CID attachment,
+resized to ~600px / ~20KB), so it renders in the email without a "download
+images" prompt and doesn't rely on external hosting. The email becomes HTML
+(banner on top, personalized text below). Untick **Include banner image** (or
+`--no-image` on the CLI) to send plain text instead — slightly better for spam
+avoidance, at the cost of the visual. `wish.png` must be committed to the repo
+so the hosted app can find it.
+
 ### Staying out of spam
 
 No tool can *guarantee* inbox placement, but this does everything in its control:
